@@ -22,6 +22,7 @@ DOMAIN=""
 SHOW_HELP=false
 SHOW_VERSION=false
 INSTALL_DEPS=false
+UPDATE=false
 
 CUSTOM_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
@@ -50,9 +51,11 @@ Options:
   --severity LEVELS      Nuclei severity (default: $SEVERITY)
   --safe-preset          Use very conservative settings to reduce risk of detection/blocking
   --install-deps         Download and install required dependencies
+  --update               Update rec0nyx to the latest version from GitHub
 
 Example:
   rec0nyx example.com --nuclei --fuzz --threads 5
+  rec0nyx --update
 
 EOF
     exit 0
@@ -99,6 +102,18 @@ install_dependencies() {
     exit 0
 }
 
+# ----------- Update Function -----------
+update_rec0nyx() {
+    echo -e "${GREEN}[*] Updating rec0nyx from GitHub...${NC}"
+    TMP_DIR=$(mktemp -d)
+    git clone https://github.com/yourusername/rec0nyx.git "$TMP_DIR"
+    sudo cp "$TMP_DIR/rec0nyx" /usr/local/bin/rec0nyx
+    sudo chmod +x /usr/local/bin/rec0nyx
+    rm -rf "$TMP_DIR"
+    echo -e "${GREEN}[+] rec0nyx has been updated to the latest version!${NC}"
+    exit 0
+}
+
 # ----------- Dependency Check -----------
 check_dependencies() {
     [[ ! -f "$WORDLIST" ]] && echo -e "${RED}[!] Wordlist not found: $WORDLIST${NC}" && exit 1
@@ -130,6 +145,7 @@ parse_args() {
             --severity) SEVERITY="$2"; shift 2 ;;
             --safe-preset) SAFE_PRESET=true; shift ;;
             --install-deps) INSTALL_DEPS=true; shift ;;
+            --update) UPDATE=true; shift ;;
             -*|--*) echo "Unknown option: $1"; usage ;;
             *)
                 if [[ -z "$DOMAIN" ]]; then
@@ -150,6 +166,9 @@ main() {
     fi
     if [[ "$SHOW_VERSION" == true ]]; then
         show_version
+    fi
+    if [[ "$UPDATE" == true ]]; then
+        update_rec0nyx
     fi
     if [[ "$INSTALL_DEPS" == true ]]; then
         install_dependencies
