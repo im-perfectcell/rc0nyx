@@ -22,7 +22,7 @@ It automates asset discovery, subdomain enumeration, vulnerability scanning, fuz
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/yim-perfectcell/rec0nyx.git
+git clone https://github.com/yourusername/rec0nyx.git
 cd rec0nyx
 ```
 
@@ -64,11 +64,13 @@ rec0nyx <target.com> [OPTIONS]
 - `--severity LEVELS`      Nuclei severity (default: critical,high,medium,low)
 - `--safe-preset`          Use conservative settings for stealth
 - `--install-deps`         Download and install required dependencies
+- `--update`               Update rec0nyx to the latest version from GitHub
 
-### Example
+### Examples
 
 ```bash
 rec0nyx example.com --nuclei --fuzz --threads 5
+rec0nyx --update
 ```
 
 ---
