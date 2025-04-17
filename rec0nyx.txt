@@ -1,0 +1,169 @@
+#!/bin/bash
+# rec0nyx - Advanced Web Reconnaissance Tool (2-in-1: Bug Bounty & Pentesting)
+# Author: Cell
+# Version: 1.0.0
+# License: MIT
+
+set -euo pipefail
+
+# ----------- Default Settings -----------
+THREADS=2
+RATE_LIMIT=5
+TIMEOUT=15
+PASSIVE=false
+SAFE_PRESET=false
+NUCLEI_SCAN=false
+FUZZ=false
+SCREENSHOT=false
+OUTPUT_BASE="rec0nyx"
+WORDLIST="/usr/share/seclists/Discovery/Web-Content/common.txt"
+SEVERITY="critical,high,medium,low"
+DOMAIN=""
+SHOW_HELP=false
+SHOW_VERSION=false
+INSTALL_DEPS=false
+
+CUSTOM_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+DEPENDENCIES=(assetfinder httpx waybackurls ffuf nuclei gowitness)
+
+# ----------- Colors -----------
+RED="\033[0;31m"; GREEN="\033[0;32m"; NC="\033[0m"
+
+# ----------- Usage Function -----------
+usage() {
+    cat <<EOF
+Usage: rec0nyx <target.com> [OPTIONS]
+
+Options:
+  -h, --help             Show this help message and exit
+  -v, --version          Show tool version and exit
+  -t, --threads NUM      Number of threads (default: $THREADS)
+  --rate-limit NUM       Rate limit for requests (default: $RATE_LIMIT)
+  --timeout SEC          Timeout in seconds (default: $TIMEOUT)
+  --wordlist FILE        Wordlist for fuzzing (default: $WORDLIST)
+  --output DIR           Output directory base name (default: $OUTPUT_BASE)
+  --nuclei               Enable vulnerability scanning (nuclei)
+  --fuzz                 Enable content fuzzing (ffuf)
+  --screenshot           Enable screenshots (gowitness)
+  --passive              Passive mode (no active probing)
+  --severity LEVELS      Nuclei severity (default: $SEVERITY)
+  --safe-preset          Use very conservative settings to reduce risk of detection/blocking
+  --install-deps         Download and install required dependencies
+
+Example:
+  rec0nyx example.com --nuclei --fuzz --threads 5
+
+EOF
+    exit 0
+}
+
+# ----------- Version Function -----------
+show_version() {
+    echo "rec0nyx version 1.0.0 by Cell"
+    exit 0
+}
+
+# ----------- Dependency Installation -----------
+install_dependencies() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}[!] Please run as root or with sudo for dependency installation.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}[*] Installing dependencies...${NC}"
+    sudo apt update
+    sudo apt install -y assetfinder ffuf curl wget git
+    if ! command -v go >/dev/null 2>&1; then
+        echo -e "${GREEN}[*] Go not found. Installing Go...${NC}"
+        sudo apt install -y golang
+    fi
+
+    export PATH=$PATH:$(go env GOPATH)/bin:$HOME/go/bin
+    GO111MODULE=on go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+    GO111MODULE=on go install github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
+    GO111MODULE=on go install github.com/projectdiscovery/waybackurls/cmd/waybackurls@latest
+    GO111MODULE=on go install github.com/sensepost/gowitness@latest
+
+    echo -e "${GREEN}[*] Installing Seclists wordlists (if missing)...${NC}"
+    if [ ! -f "/usr/share/seclists/Discovery/Web-Content/common.txt" ]; then
+        sudo apt install -y seclists || {
+            echo -e "${RED}[!] Seclists not found in apt. Downloading manually...${NC}"
+            sudo mkdir -p /usr/share/seclists
+            sudo wget -O /usr/share/seclists/common.txt https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt
+        }
+    fi
+
+    grep -q 'go/bin' ~/.bashrc || echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc
+
+    echo -e "${GREEN}[+] Dependencies installed! Please restart your terminal or run: source ~/.bashrc${NC}"
+    exit 0
+}
+
+# ----------- Dependency Check -----------
+check_dependencies() {
+    [[ ! -f "$WORDLIST" ]] && echo -e "${RED}[!] Wordlist not found: $WORDLIST${NC}" && exit 1
+    for dep in "${DEPENDENCIES[@]}"; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            echo -e "${RED}[!] Dependency missing: $dep${NC}"
+            echo "    Run with --install-deps to install requirements."
+            exit 1
+        fi
+    done
+}
+
+# ----------- Argument Parsing -----------
+parse_args() {
+    [[ $# -eq 0 ]] && usage
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help) SHOW_HELP=true; shift ;;
+            -v|--version) SHOW_VERSION=true; shift ;;
+            -t|--threads) THREADS="$2"; shift 2 ;;
+            --rate-limit) RATE_LIMIT="$2"; shift 2 ;;
+            --timeout) TIMEOUT="$2"; shift 2 ;;
+            --wordlist) WORDLIST="$2"; shift 2 ;;
+            --output) OUTPUT_BASE="$2"; shift 2 ;;
+            --nuclei) NUCLEI_SCAN=true; shift ;;
+            --fuzz) FUZZ=true; shift ;;
+            --screenshot) SCREENSHOT=true; shift ;;
+            --passive) PASSIVE=true; shift ;;
+            --severity) SEVERITY="$2"; shift 2 ;;
+            --safe-preset) SAFE_PRESET=true; shift ;;
+            --install-deps) INSTALL_DEPS=true; shift ;;
+            -*|--*) echo "Unknown option: $1"; usage ;;
+            *)
+                if [[ -z "$DOMAIN" ]]; then
+                    DOMAIN="$1"; shift
+                else
+                    echo "Unknown argument: $1"; usage
+                fi
+                ;;
+        esac
+    done
+}
+
+# ----------- Main Logic -----------
+main() {
+    parse_args "$@"
+    if [[ "$SHOW_HELP" == true ]]; then
+        usage
+    fi
+    if [[ "$SHOW_VERSION" == true ]]; then
+        show_version
+    fi
+    if [[ "$INSTALL_DEPS" == true ]]; then
+        install_dependencies
+    fi
+    if [[ -z "$DOMAIN" ]]; then
+        echo -e "${RED}[!] Please provide a target domain.${NC}"
+        usage
+    fi
+    check_dependencies
+
+    # The rest of your recon logic goes here.
+    echo -e "${GREEN}[*] All checks passed, ready to start recon on: $DOMAIN${NC}"
+    # Example: echo "[*] Would run subdomain enumeration here..."
+    # Insert the rest of your workflow below this comment.
+}
+
+main "$@"
