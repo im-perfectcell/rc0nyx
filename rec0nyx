@@ -1,15 +1,32 @@
 #!/bin/bash
-# rec0nyx - Advanced Web Reconnaissance Tool (2-in-1: Bug Bounty & Pentesting)
-# Author: Cell
-# Version: 1.0.0
+# rec0nyx - Next-Gen Advanced Web Reconnaissance Tool (All-in-One)
+# Author: Cell (and Copilot)
+# Version: 2.0.0
 # License: MIT
 
 set -euo pipefail
+IFS=$'\n\t'
 
-# ----------- Default Settings -----------
-THREADS=2
-RATE_LIMIT=5
-TIMEOUT=15
+# -------- Colors --------
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+BLUE="\033[0;34m"
+YELLOW="\033[0;33m"
+NC="\033[0m"
+
+# -------- Logging --------
+log_info() { echo -e "${BLUE}[*] $1${NC}"; }
+log_success() { echo -e "${GREEN}[+] $1${NC}"; }
+log_warn() { echo -e "${YELLOW}[!] $1${NC}"; }
+log_error() { echo -e "${RED}[-] $1${NC}"; exit 1; }
+
+trap 'echo -e "${RED}[-] Script interrupted. Exiting...${NC}"; exit 1' INT TERM
+
+# -------- Defaults --------
+CONFIG_FILE=""
+THREADS=4
+RATE_LIMIT=10
+TIMEOUT=20
 PASSIVE=false
 SAFE_PRESET=false
 NUCLEI_SCAN=false
@@ -19,22 +36,61 @@ OUTPUT_BASE="rec0nyx"
 WORDLIST="/usr/share/seclists/Discovery/Web-Content/common.txt"
 SEVERITY="critical,high,medium,low"
 DOMAIN=""
+DOMAIN_FILE=""
 SHOW_HELP=false
 SHOW_VERSION=false
 INSTALL_DEPS=false
 UPDATE=false
-
+NOTIFY_URL=""
+NOTIFY_TELEGRAM=""
+NOTIFY_EMAIL=""
+NOTIFY_BBRF=""
+QUERY_DB=false
 CUSTOM_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+RESUME=false
+SESSION_FILE=""
+API_KEYS=()
+ENABLED_MODULES=()
+REPORT_FORMATS="md,html,json,csv"
 
-DEPENDENCIES=(assetfinder httpx waybackurls ffuf nuclei gowitness)
+DEPENDENCIES=(assetfinder subfinder amass findomain dnsx massdns puredns dnsgen altdns httpx waybackurls ffuf nuclei gowitness sqlite3 getJS LinkFinder gf trufflehog cloud_enum asnmap S3Scanner jq parallel)
 
-# ----------- Colors -----------
-RED="\033[0;31m"; GREEN="\033[0;32m"; NC="\033[0m"
+# -------- Config Loader --------
+load_config() {
+    if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then return; fi
+    log_info "Loading config from $CONFIG_FILE"
+    # Simple key=value YAML/JSON loader (basic, not full-featured)
+    while IFS='=' read -r key value; do
+        key=$(echo "$key" | tr -d '[:space:]')
+        value=$(echo "$value" | tr -d '[:space:]')
+        case "$key" in
+            threads) THREADS="$value" ;;
+            rate_limit) RATE_LIMIT="$value" ;;
+            timeout) TIMEOUT="$value" ;;
+            output_base) OUTPUT_BASE="$value" ;;
+            wordlist) WORDLIST="$value" ;;
+            severity) SEVERITY="$value" ;;
+            custom_ua) CUSTOM_UA="$value" ;;
+            nuclei_scan) [[ "$value" == "true" ]] && NUCLEI_SCAN=true ;;
+            fuzz) [[ "$value" == "true" ]] && FUZZ=true ;;
+            screenshot) [[ "$value" == "true" ]] && SCREENSHOT=true ;;
+            passive) [[ "$value" == "true" ]] && PASSIVE=true ;;
+            safe_preset) [[ "$value" == "true" ]] && SAFE_PRESET=true ;;
+            notify_url) NOTIFY_URL="$value" ;;
+            notify_telegram) NOTIFY_TELEGRAM="$value" ;;
+            notify_email) NOTIFY_EMAIL="$value" ;;
+            notify_bbrf) NOTIFY_BBRF="$value" ;;
+            api_key_*) API_KEYS+=("$key:$value") ;;
+            enabled_modules) ENABLED_MODULES+=($(echo "$value" | tr ',' ' ')) ;;
+            report_formats) REPORT_FORMATS="$value" ;;
+        esac
+    done < <(grep -v '^#' "$CONFIG_FILE" | grep '=')
+}
 
-# ----------- Usage Function -----------
+# -------- Usage --------
 usage() {
     cat <<EOF
-Usage: rec0nyx <target.com> [OPTIONS]
+Usage: rec0nyx <target.com> [OPTIONS] | --input-file domains.txt
 
 Options:
   -h, --help             Show this help message and exit
@@ -44,89 +100,370 @@ Options:
   --timeout SEC          Timeout in seconds (default: $TIMEOUT)
   --wordlist FILE        Wordlist for fuzzing (default: $WORDLIST)
   --output DIR           Output directory base name (default: $OUTPUT_BASE)
+  --config FILE          Load settings from config file (YAML/JSON)
+  --input-file FILE      File with list of domains for bulk recon
   --nuclei               Enable vulnerability scanning (nuclei)
   --fuzz                 Enable content fuzzing (ffuf)
   --screenshot           Enable screenshots (gowitness)
   --passive              Passive mode (no active probing)
   --severity LEVELS      Nuclei severity (default: $SEVERITY)
-  --safe-preset          Use very conservative settings to reduce risk of detection/blocking
-  --install-deps         Download and install required dependencies
+  --safe-preset          Use conservative settings to reduce detection risk
+  --install-deps         Install required dependencies
   --update               Update rec0nyx to the latest version from GitHub
+  --notify URL           Send results to Slack/Discord webhook
+  --notify-telegram URL  Send notification to Telegram bot
+  --notify-email EMAIL   Send notification email with report
+  --notify-bbrf URL      Send findings to BBRF API
+  --query-db             Query the asset database
+  --resume               Resume previous session
+  --session FILE         Specify custom session file
+  --report-formats FMT   Output report formats (md,html,json,csv; default: all)
+  --enable MODULES       Comma-separated list of modules to enable/disable (advanced)
+  --api-key-<tool> KEY   API key for external tool (e.g., --api-key-shodan XXXXX)
 
 Example:
   rec0nyx example.com --nuclei --fuzz --threads 5
-  rec0nyx --update
+  rec0nyx --config config.yaml --input-file domains.txt
+  rec0nyx --install-deps
+  rec0nyx example.com --query-db
 
 EOF
     exit 0
 }
 
-# ----------- Version Function -----------
+# -------- Version --------
 show_version() {
-    echo "rec0nyx version 1.0.0 by Cell"
+    echo "rec0nyx version 2.0.0 by Cell"
     exit 0
 }
 
-# ----------- Dependency Installation -----------
+# -------- Dependency Installer --------
 install_dependencies() {
     if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}[!] Please run as root or with sudo for dependency installation.${NC}"
-        exit 1
+        log_error "Please run as root or with sudo for dependency installation."
     fi
-    echo -e "${GREEN}[*] Installing dependencies...${NC}"
-    sudo apt update
-    sudo apt install -y assetfinder ffuf curl wget git
-    if ! command -v go >/dev/null 2>&1; then
-        echo -e "${GREEN}[*] Go not found. Installing Go...${NC}"
-        sudo apt install -y golang
+    log_info "Installing dependencies..."
+    local os=""
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if command -v apt &>/dev/null; then os="debian"
+        elif command -v dnf &>/dev/null; then os="fedora"
+        elif command -v yum &>/dev/null; then os="rhel"
+        fi
+    elif [[ "$OSTYPE" == "darwin"* && command -v brew &>/dev/null ]]; then
+        os="macos"
     fi
-
-    export PATH=$PATH:$(go env GOPATH)/bin:$HOME/go/bin
-    GO111MODULE=on go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-    GO111MODULE=on go install github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
-    GO111MODULE=on go install github.com/projectdiscovery/waybackurls/cmd/waybackurls@latest
-    GO111MODULE=on go install github.com/sensepost/gowitness@latest
-
-    echo -e "${GREEN}[*] Installing Seclists wordlists (if missing)...${NC}"
-    if [ ! -f "/usr/share/seclists/Discovery/Web-Content/common.txt" ]; then
-        sudo apt install -y seclists || {
-            echo -e "${RED}[!] Seclists not found in apt. Downloading manually...${NC}"
-            sudo mkdir -p /usr/share/seclists
-            sudo wget -O /usr/share/seclists/common.txt https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt
-        }
+    if [[ -z "$os" ]]; then
+        log_error "Unsupported OS or package manager. Install dependencies manually: ${DEPENDENCIES[*]}"
     fi
-
-    grep -q 'go/bin' ~/.bashrc || echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc
-
-    echo -e "${GREEN}[+] Dependencies installed! Please restart your terminal or run: source ~/.bashrc${NC}"
+    case "$os" in
+        debian) sudo apt update && sudo apt install -y assetfinder subfinder amass findomain dnsx massdns puredns dnsgen altdns ffuf curl wget git golang sqlite3 seclists jq parallel python3-pip; pip3 install trufflehog; ;;
+        fedora) sudo dnf install -y assetfinder subfinder amass findomain dnsx massdns puredns dnsgen altdns ffuf curl wget git golang sqlite3 seclists jq parallel python3-pip; pip3 install trufflehog; ;;
+        rhel) sudo yum install -y assetfinder subfinder amass findomain dnsx massdns puredns dnsgen altdns ffuf curl wget git golang sqlite3 jq parallel python3-pip; pip3 install trufflehog; ;;
+        macos) brew install assetfinder subfinder amass findomain dnsx massdns puredns dnsgen altdns ffuf curl wget git go sqlite3 seclists jq parallel; pip3 install trufflehog; ;;
+    esac
+    go_tools=(httpx nuclei waybackurls gowitness getJS LinkFinder)
+    for tool in "${go_tools[@]}"; do
+        if ! command -v "$tool" &>/dev/null; then
+            log_info "Installing $tool..."
+            go install github.com/projectdiscovery/${tool}/cmd/${tool}@latest 2>/dev/null || \
+            go install github.com/tomnomnom/${tool}@latest 2>/dev/null || \
+            log_warn "Failed to install $tool"
+        fi
+    done
+    # Install S3Scanner, cloud_enum, asnmap, gf, etc.
+    if ! command -v S3Scanner &>/dev/null; then pip3 install S3Scanner; fi
+    if ! command -v cloud_enum &>/dev/null; then pip3 install cloud_enum; fi
+    if ! command -v asnmap &>/dev/null; then go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest; fi
+    if ! command -v gf &>/dev/null; then go install github.com/tomnomnom/gf@latest; fi
+    log_success "Dependencies installed! Restart terminal or run: source ~/.bashrc"
     exit 0
 }
 
-# ----------- Update Function -----------
+# -------- Update --------
 update_rec0nyx() {
-    echo -e "${GREEN}[*] Updating rec0nyx from GitHub...${NC}"
+    log_info "Updating rec0nyx from GitHub..."
     TMP_DIR=$(mktemp -d)
-    git clone https://github.com/yourusername/rec0nyx.git "$TMP_DIR"
+    git clone https://github.com/yourusername/rec0nyx.git "$TMP_DIR" || {
+        log_error "Failed to clone repository"
+        rm -rf "$TMP_DIR"
+    }
     sudo cp "$TMP_DIR/rec0nyx" /usr/local/bin/rec0nyx
     sudo chmod +x /usr/local/bin/rec0nyx
     rm -rf "$TMP_DIR"
-    echo -e "${GREEN}[+] rec0nyx has been updated to the latest version!${NC}"
+    log_success "rec0nyx updated to the latest version!"
     exit 0
 }
 
-# ----------- Dependency Check -----------
+# -------- Dependency Check --------
 check_dependencies() {
-    [[ ! -f "$WORDLIST" ]] && echo -e "${RED}[!] Wordlist not found: $WORDLIST${NC}" && exit 1
+    [[ ! -f "$WORDLIST" ]] && log_error "Wordlist not found: $WORDLIST"
     for dep in "${DEPENDENCIES[@]}"; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
-            echo -e "${RED}[!] Dependency missing: $dep${NC}"
-            echo "    Run with --install-deps to install requirements."
-            exit 1
+        if ! command -v "$dep" &>/dev/null; then
+            log_error "Dependency missing: $dep\nRun with --install-deps to install requirements."
         fi
     done
 }
 
-# ----------- Argument Parsing -----------
+# -------- Input Validation --------
+validate_inputs() {
+    if [[ -z "$DOMAIN" && -z "$DOMAIN_FILE" ]]; then
+        log_error "Please provide a target domain or --input-file"
+    fi
+    [[ "$THREADS" =~ ^[0-9]+$ && "$THREADS" -gt 0 ]] || log_error "Invalid threads: $THREADS"
+    [[ "$RATE_LIMIT" =~ ^[0-9]+$ && "$RATE_LIMIT" -gt 0 ]] || log_error "Invalid rate limit: $RATE_LIMIT"
+    [[ "$TIMEOUT" =~ ^[0-9]+$ && "$TIMEOUT" -gt 0 ]] || log_error "Invalid timeout: $TIMEOUT"
+    [[ "$SEVERITY" =~ ^[a-z,]+$ ]] || log_error "Invalid severity: $SEVERITY"
+    [[ -z "$DOMAIN" || "$DOMAIN" =~ ^[a-zA-Z0-9.-]+$ ]] || log_error "Invalid domain: $DOMAIN"
+}
+
+# -------- Session/Resume System --------
+load_session() {
+    [[ -z "$SESSION_FILE" || ! -f "$SESSION_FILE" ]] && return
+    log_info "Resuming session from $SESSION_FILE"
+    source "$SESSION_FILE"
+}
+save_session() {
+    [[ -z "$SESSION_FILE" ]] && return
+    declare -p DOMAIN THREADS RATE_LIMIT TIMEOUT OUTPUT_DIR > "$SESSION_FILE"
+}
+
+# -------- Safe Preset --------
+apply_safe_preset() {
+    if [[ "$SAFE_PRESET" == true ]]; then
+        THREADS=1
+        RATE_LIMIT=2
+        TIMEOUT=30
+        log_info "Safe preset applied: THREADS=$THREADS, RATE_LIMIT=$RATE_LIMIT, TIMEOUT=$TIMEOUT"
+    fi
+}
+
+# -------- Output/DB Setup --------
+setup_output() {
+    OUTPUT_DIR="$OUTPUT_BASE/$DOMAIN"
+    mkdir -p "$OUTPUT_DIR"/{subs,urls,vulns,screenshots,js,cloud,asn}
+    sqlite3 "$OUTPUT_DIR/rec0nyx.db" <<EOF
+CREATE TABLE IF NOT EXISTS subdomains (id INTEGER PRIMARY KEY, domain TEXT, source TEXT, alive INTEGER);
+CREATE TABLE IF NOT EXISTS urls (id INTEGER PRIMARY KEY, url TEXT, source TEXT);
+CREATE TABLE IF NOT EXISTS vulns (id INTEGER PRIMARY KEY, url TEXT, severity TEXT, description TEXT);
+CREATE TABLE IF NOT EXISTS js_endpoints (id INTEGER PRIMARY KEY, endpoint TEXT, file TEXT);
+CREATE TABLE IF NOT EXISTS secrets (id INTEGER PRIMARY KEY, secret TEXT, file TEXT);
+CREATE TABLE IF NOT EXISTS cloud_assets (id INTEGER PRIMARY KEY, asset TEXT, provider TEXT);
+CREATE TABLE IF NOT EXISTS asn_assets (id INTEGER PRIMARY KEY, ip TEXT, asn TEXT, desc TEXT);
+EOF
+}
+
+# -------- Query DB --------
+query_db() {
+    log_info "Querying asset database..."
+    sqlite3 "$OUTPUT_BASE/$DOMAIN/rec0nyx.db" <<EOF
+SELECT 'Subdomains:'; SELECT domain, source, alive FROM subdomains;
+SELECT 'URLs:'; SELECT url, source FROM urls;
+SELECT 'Vulnerabilities:'; SELECT url, severity, description FROM vulns;
+SELECT 'JS Endpoints:'; SELECT endpoint, file FROM js_endpoints;
+SELECT 'Secrets:'; SELECT secret, file FROM secrets;
+SELECT 'Cloud:'; SELECT asset, provider FROM cloud_assets;
+SELECT 'ASN:'; SELECT ip, asn, desc FROM asn_assets;
+EOF
+    exit 0
+}
+
+# -------- Recon Functions (All Phases) --------
+subdomain_enum() {
+    log_info "Enumerating subdomains..."
+    # Merge all tools, dedupe
+    (
+      assetfinder --subs-only "$DOMAIN" || true
+      subfinder -d "$DOMAIN" || true
+      amass enum -passive -d "$DOMAIN" || true
+      findomain --target "$DOMAIN" || true
+      # DNS permutations
+      dnsgen "$OUTPUT_DIR/subs.txt" || true
+      # Brute-force/active
+      puredns bruteforce "$WORDLIST" "$DOMAIN" || true
+    ) | sort -u | tee "$OUTPUT_DIR/subs.txt"
+    while IFS= read -r sub; do
+        ssub=${sub//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "INSERT OR IGNORE INTO subdomains (domain, source) VALUES ('$ssub', 'combo');"
+    done < "$OUTPUT_DIR/subs.txt"
+    [[ -s "$OUTPUT_DIR/subs.txt" ]] && log_success "Found $(wc -l < "$OUTPUT_DIR/subs.txt") subdomains" || log_warn "No subdomains found"
+}
+
+probe_alive() {
+    [[ "$PASSIVE" == true ]] && return
+    [[ ! -s "$OUTPUT_DIR/subs.txt" ]] && return
+    log_info "Probing live hosts..."
+    cat "$OUTPUT_DIR/subs.txt" | httpx -silent -threads "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -H "User-Agent: $CUSTOM_UA" -o "$OUTPUT_DIR/alive.txt"
+    while IFS= read -r sub; do
+        ssub=${sub//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "UPDATE subdomains SET alive=1 WHERE domain='$ssub';"
+    done < "$OUTPUT_DIR/alive.txt"
+    [[ -s "$OUTPUT_DIR/alive.txt" ]] && log_success "Found $(wc -l < "$OUTPUT_DIR/alive.txt") live hosts" || log_warn "No live hosts found"
+}
+
+wayback_data() {
+    log_info "Collecting Wayback/Archive data..."
+    waybackurls "$DOMAIN" > "$OUTPUT_DIR/urls.txt"
+    while IFS= read -r url; do
+        surl=${url//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "INSERT INTO urls (url, source) VALUES ('$surl', 'waybackurls');"
+    done < "$OUTPUT_DIR/urls.txt"
+    [[ -s "$OUTPUT_DIR/urls.txt" ]] && log_success "Collected $(wc -l < "$OUTPUT_DIR/urls.txt") URLs" || log_warn "No Wayback URLs found"
+}
+
+fuzz_content() {
+    [[ "$FUZZ" != true || "$PASSIVE" == true || ! -s "$OUTPUT_DIR/alive.txt" ]] && return
+    log_info "Fuzzing content..."
+    head -n 10 "$OUTPUT_DIR/alive.txt" > "$OUTPUT_DIR/to_fuzz.txt"
+    [[ ! -s "$OUTPUT_DIR/to_fuzz.txt" ]] && { log_warn "No URLs to fuzz"; return; }
+    parallel -j "$THREADS" ffuf -u '{}'/FUZZ -w "$WORDLIST" -mc 200,301,302,307,401,403 -t "$THREADS" -timeout "$TIMEOUT" -o "$OUTPUT_DIR/fuzz_{#}.json" -H "User-Agent: $CUSTOM_UA" -rl "$RATE_LIMIT" ::: $(cat "$OUTPUT_DIR/to_fuzz.txt")
+    jq -r '.results[].url' "$OUTPUT_DIR"/fuzz_*.json | sort -u > "$OUTPUT_DIR/fuzz_combined.txt" || true
+    [[ -s "$OUTPUT_DIR/fuzz_combined.txt" ]] && log_success "Found $(wc -l < "$OUTPUT_DIR/fuzz_combined.txt") endpoints"
+}
+
+run_nuclei() {
+    [[ "$NUCLEI_SCAN" != true || "$PASSIVE" == true || ! -s "$OUTPUT_DIR/alive.txt" ]] && return
+    log_info "Running Nuclei scan..."
+    nuclei -l "$OUTPUT_DIR/alive.txt" -severity "$SEVERITY" -o "$OUTPUT_DIR/vulns.txt" -silent -rl "$RATE_LIMIT" -H "User-Agent: $CUSTOM_UA"
+    while IFS= read -r line; do
+        url=$(echo "$line" | awk '{print $4}')
+        severity=$(echo "$line" | awk '{print $2}')
+        desc=$(echo "$line" | cut -d' ' -f5-)
+        surl=${url//\'/\'\'}
+        sdesc=${desc//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "INSERT INTO vulns (url, severity, description) VALUES ('$surl', '$severity', '$sdesc');"
+    done < "$OUTPUT_DIR/vulns.txt"
+    [[ -s "$OUTPUT_DIR/vulns.txt" ]] && log_success "Found $(wc -l < "$OUTPUT_DIR/vulns.txt") vulnerabilities"
+}
+
+take_screenshots() {
+    [[ "$SCREENSHOT" != true || "$PASSIVE" == true || ! -s "$OUTPUT_DIR/alive.txt" ]] && return
+    log_info "Taking screenshots..."
+    gowitness file -f "$OUTPUT_DIR/alive.txt" --threads "$THREADS" --timeout "$TIMEOUT" -P "$OUTPUT_DIR/screenshots" --user-agent "$CUSTOM_UA"
+    [[ -n "$(ls -A "$OUTPUT_DIR/screenshots")" ]] && log_success "Screenshots saved in $OUTPUT_DIR/screenshots"
+}
+
+js_extraction() {
+    log_info "Extracting JavaScript endpoints..."
+    mkdir -p "$OUTPUT_DIR/js"
+    while IFS= read -r url; do
+        getJS --url "$url" --output "$OUTPUT_DIR/js" || true
+    done < "$OUTPUT_DIR/alive.txt"
+    find "$OUTPUT_DIR/js" -type f -name "*.js" | while read jsfile; do
+        LinkFinder -i "$jsfile" -o cli | tee -a "$OUTPUT_DIR/js_endpoints.txt"
+        gf endpoints < "$jsfile" | tee -a "$OUTPUT_DIR/js_gf.txt"
+        trufflehog filesystem --directory "$jsfile" --json | tee -a "$OUTPUT_DIR/js_secrets.json"
+    done
+    # Insert endpoints/secrets into DB (simple parse)
+    grep -Eo 'https?://[^"]+' "$OUTPUT_DIR/js_endpoints.txt" | while read ep; do
+        epq=${ep//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "INSERT INTO js_endpoints (endpoint, file) VALUES ('$epq', 'js');"
+    done
+    jq -r '.results[]?.strings_found[]?' "$OUTPUT_DIR/js_secrets.json" | while read sec; do
+        secq=${sec//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "INSERT INTO secrets (secret, file) VALUES ('$secq', 'js');"
+    done
+}
+
+cloud_enum() {
+    log_info "Enumerating cloud assets..."
+    cloud_enum -k "$(get_api_key cloud_enum)" -d "$DOMAIN" | tee "$OUTPUT_DIR/cloud.txt"
+    grep -Eo 'https?://[^ ]+' "$OUTPUT_DIR/cloud.txt" | while read asset; do
+        assetq=${asset//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "INSERT INTO cloud_assets (asset, provider) VALUES ('$assetq', 'cloud_enum');"
+    done
+}
+
+asn_enum() {
+    log_info "Enumerating ASN and IP ranges..."
+    asnmap -d "$DOMAIN" -o "$OUTPUT_DIR/asn.json"
+    jq -c '.[]' "$OUTPUT_DIR/asn.json" | while read entry; do
+        ip=$(echo "$entry" | jq -r '.ip')
+        asn=$(echo "$entry" | jq -r '.asn')
+        desc=$(echo "$entry" | jq -r '.desc')
+        ipq=${ip//\'/\'\'}
+        descq=${desc//\'/\'\'}
+        sqlite3 "$OUTPUT_DIR/rec0nyx.db" "INSERT INTO asn_assets (ip, asn, desc) VALUES ('$ipq', '$asn', '$descq');"
+    done
+}
+
+# -- Helper to get API key from loaded config --
+get_api_key() {
+    for pair in "${API_KEYS[@]}"; do
+        [[ "$pair" == "api_key_$1:"* ]] && echo "${pair#*:}"
+    done
+}
+
+# -------- Reporting --------
+generate_report() {
+    local report_file_md="$OUTPUT_DIR/report.md"
+    local report_file_html="$OUTPUT_DIR/report.html"
+    local report_file_json="$OUTPUT_DIR/report.json"
+    local report_file_csv="$OUTPUT_DIR/report.csv"
+    log_info "Generating reports..."
+    # Markdown
+    cat <<EOF > "$report_file_md"
+# rec0nyx Recon Report: $DOMAIN
+Generated: $(date)
+
+## Subdomains
+- Total: $(wc -l < "$OUTPUT_DIR/subs.txt" 2>/dev/null || echo 0)
+- Live: $(wc -l < "$OUTPUT_DIR/alive.txt" 2>/dev/null || echo 0)
+
+## URLs
+- Wayback: $(wc -l < "$OUTPUT_DIR/urls.txt" 2>/dev/null || echo 0)
+
+## Fuzzing
+- Endpoints: $(wc -l < "$OUTPUT_DIR/fuzz_combined.txt" 2>/dev/null || echo 0)
+
+## Vulnerabilities
+- Total: $(wc -l < "$OUTPUT_DIR/vulns.txt" 2>/dev/null || echo 0)
+
+## JS Endpoints
+- Found: $(wc -l < "$OUTPUT_DIR/js_endpoints.txt" 2>/dev/null || echo 0)
+
+## Secrets
+- Found: $(jq '.results|length' "$OUTPUT_DIR/js_secrets.json" 2>/dev/null || echo 0)
+
+## Cloud Assets
+$(cat "$OUTPUT_DIR/cloud.txt" 2>/dev/null || echo "None found")
+
+## ASN
+$(cat "$OUTPUT_DIR/asn.json" 2>/dev/null || echo "None found")
+
+## Screenshots
+- Location: $([[ -d "$OUTPUT_DIR/screenshots" && -n "$(ls -A "$OUTPUT_DIR/screenshots")" ]] && echo "$OUTPUT_DIR/screenshots" || echo "Not taken")
+EOF
+    # HTML (simple)
+    cat <<EOF > "$report_file_html"
+<html><head><title>rec0nyx $DOMAIN Report</title></head><body>
+<h1>Recon Report: $DOMAIN</h1>
+<pre>$(cat "$report_file_md")</pre>
+</body></html>
+EOF
+    # JSON
+    jq -n --arg domain "$DOMAIN" --arg date "$(date)" \
+      --slurpfile subs "$OUTPUT_DIR/subs.txt" \
+      --slurpfile urls "$OUTPUT_DIR/urls.txt" \
+      --slurpfile alive "$OUTPUT_DIR/alive.txt" \
+      --slurpfile vulns "$OUTPUT_DIR/vulns.txt" \
+      --slurpfile js_endpoints "$OUTPUT_DIR/js_endpoints.txt" \
+      --slurpfile secrets "$OUTPUT_DIR/js_secrets.json" \
+      '{domain:$domain, date:$date, subdomains:$subs, urls:$urls, alive:$alive, vulns:$vulns, js_endpoints:$js_endpoints, secrets:$secrets}' > "$report_file_json"
+    # CSV (subdomains only, as example)
+    paste -d',' "$OUTPUT_DIR/subs.txt" "$OUTPUT_DIR/alive.txt" > "$report_file_csv" 2>/dev/null || true
+    log_success "Reports generated: $report_file_md $report_file_html $report_file_json $report_file_csv"
+}
+
+# -------- Notifications --------
+send_notification() {
+    [[ -n "$NOTIFY_URL" ]] && curl -s -X POST -H 'Content-type: application/json' --data "{\"text\":\"Recon complete for $DOMAIN. Results in $OUTPUT_DIR/report.md\"}" "$NOTIFY_URL" >/dev/null
+    [[ -n "$NOTIFY_TELEGRAM" ]] && curl -s -X POST "$NOTIFY_TELEGRAM" -d "Recon complete for $DOMAIN. Results in $OUTPUT_DIR/report.md" >/dev/null
+    [[ -n "$NOTIFY_EMAIL" ]] && mail -s "rec0nyx report for $DOMAIN" "$NOTIFY_EMAIL" < "$OUTPUT_DIR/report.md"
+    [[ -n "$NOTIFY_BBRF" ]] && curl -s -X POST -H 'Content-type: application/json' --data @"$OUTPUT_DIR/report.json" "$NOTIFY_BBRF"
+    log_success "Notifications sent."
+}
+
+# -------- Argument Parsing --------
 parse_args() {
     [[ $# -eq 0 ]] && usage
     while [[ $# -gt 0 ]]; do
@@ -138,6 +475,8 @@ parse_args() {
             --timeout) TIMEOUT="$2"; shift 2 ;;
             --wordlist) WORDLIST="$2"; shift 2 ;;
             --output) OUTPUT_BASE="$2"; shift 2 ;;
+            --config) CONFIG_FILE="$2"; shift 2 ;;
+            --input-file) DOMAIN_FILE="$2"; shift 2 ;;
             --nuclei) NUCLEI_SCAN=true; shift ;;
             --fuzz) FUZZ=true; shift ;;
             --screenshot) SCREENSHOT=true; shift ;;
@@ -146,43 +485,68 @@ parse_args() {
             --safe-preset) SAFE_PRESET=true; shift ;;
             --install-deps) INSTALL_DEPS=true; shift ;;
             --update) UPDATE=true; shift ;;
-            -*|--*) echo "Unknown option: $1"; usage ;;
+            --notify) NOTIFY_URL="$2"; shift 2 ;;
+            --notify-telegram) NOTIFY_TELEGRAM="$2"; shift 2 ;;
+            --notify-email) NOTIFY_EMAIL="$2"; shift 2 ;;
+            --notify-bbrf) NOTIFY_BBRF="$2"; shift 2 ;;
+            --query-db) QUERY_DB=true; shift ;;
+            --resume) RESUME=true; shift ;;
+            --session) SESSION_FILE="$2"; shift 2 ;;
+            --report-formats) REPORT_FORMATS="$2"; shift 2 ;;
+            --enable) ENABLED_MODULES+=($(echo "$2" | tr ',' ' ')); shift 2 ;;
+            --api-key-*) API_KEYS+=("${1:10}:$2"); shift 2 ;;
+            -*|--*) log_error "Unknown option: $1"; usage ;;
             *)
-                if [[ -z "$DOMAIN" ]]; then
-                    DOMAIN="$1"; shift
-                else
-                    echo "Unknown argument: $1"; usage
+                if [[ -z "$DOMAIN" ]]; then DOMAIN="$1"; shift
+                else log_error "Unknown argument: $1"; usage
                 fi
                 ;;
         esac
     done
 }
 
-# ----------- Main Logic -----------
+# -------- Main Bulk Logic --------
+main_single() {
+    load_config
+    check_dependencies
+    validate_inputs
+    apply_safe_preset
+    setup_output
+    [[ "$RESUME" == true ]] && load_session
+    subdomain_enum
+    probe_alive
+    wayback_data
+    fuzz_content
+    run_nuclei
+    take_screenshots
+    js_extraction
+    cloud_enum
+    asn_enum
+    generate_report
+    send_notification
+    save_session
+    log_success "Reconnaissance complete for $DOMAIN!"
+}
+main_bulk() {
+    while IFS= read -r dom; do
+        [[ -z "$dom" ]] && continue
+        DOMAIN="$dom"
+        main_single
+    done < "$DOMAIN_FILE"
+}
+
 main() {
     parse_args "$@"
-    if [[ "$SHOW_HELP" == true ]]; then
-        usage
+    [[ "$SHOW_HELP" == true ]] && usage
+    [[ "$SHOW_VERSION" == true ]] && show_version
+    [[ "$UPDATE" == true ]] && update_rec0nyx
+    [[ "$INSTALL_DEPS" == true ]] && install_dependencies
+    [[ "$QUERY_DB" == true ]] && { [[ -f "$OUTPUT_BASE/$DOMAIN/rec0nyx.db" ]] || log_error "No database found for $DOMAIN"; query_db; }
+    if [[ -n "$DOMAIN_FILE" ]]; then
+        main_bulk
+    else
+        main_single
     fi
-    if [[ "$SHOW_VERSION" == true ]]; then
-        show_version
-    fi
-    if [[ "$UPDATE" == true ]]; then
-        update_rec0nyx
-    fi
-    if [[ "$INSTALL_DEPS" == true ]]; then
-        install_dependencies
-    fi
-    if [[ -z "$DOMAIN" ]]; then
-        echo -e "${RED}[!] Please provide a target domain.${NC}"
-        usage
-    fi
-    check_dependencies
-
-    # The rest of your recon logic goes here.
-    echo -e "${GREEN}[*] All checks passed, ready to start recon on: $DOMAIN${NC}"
-    # Example: echo "[*] Would run subdomain enumeration here..."
-    # Insert the rest of your workflow below this comment.
 }
 
 main "$@"
