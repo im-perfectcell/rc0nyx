@@ -146,21 +146,43 @@ install_dependencies() {
     sudo apt update
     sudo apt install -y amass findomain massdns dnsgen altdns ffuf sqlite3 jq parallel seclists python3-pip git curl wget
 
-    log_info "Installing Go-based tools..."
-    export GO111MODULE=on
-    go install github.com/d3mondev/puredns/v2@latest
-    go install github.com/tomnomnom/assetfinder@latest
-    go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-    go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-    go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-    go install github.com/projectdiscovery/waybackurls/cmd/waybackurls@latest
-    go install github.com/projectdiscovery/ffuf/cmd/ffuf@latest
-    go install github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
-    go install github.com/sensepost/gowitness@latest
-    go install github.com/003random/getJS@latest
-    go install github.com/ProjectAnteLink/LinkFinder@latest
-    go install github.com/tomnomnom/gf@latest
-    go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
+    # -------- Install Go-based tools as user, then copy system-wide --------
+
+    GO_TOOLS=(
+      "github.com/tomnomnom/assetfinder@latest"
+      "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+      "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+      "github.com/d3mondev/puredns/v2@latest"
+      "github.com/projectdiscovery/httpx/cmd/httpx@latest"
+      "github.com/projectdiscovery/waybackurls/cmd/waybackurls@latest"
+      "github.com/projectdiscovery/ffuf/cmd/ffuf@latest"
+      "github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest"
+      "github.com/sensepost/gowitness@latest"
+      "github.com/003random/getJS@latest"
+      "github.com/ProjectAnteLink/LinkFinder@latest"
+      "github.com/tomnomnom/gf@latest"
+      "github.com/projectdiscovery/asnmap/cmd/asnmap@latest"
+    )
+
+    # Find current user (even if running with sudo)
+    RUNUSER=$(logname 2>/dev/null || echo $USER)
+
+    for tool in "${GO_TOOLS[@]}"; do
+      TOOL_NAME=$(basename "$(echo "$tool" | cut -d'@' -f1)")
+      log_info "Installing $TOOL_NAME via go install as $RUNUSER"
+      sudo -u "$RUNUSER" env PATH="$PATH" go install "$tool"
+      if [ -f "/home/$RUNUSER/go/bin/$TOOL_NAME" ]; then
+        sudo cp "/home/$RUNUSER/go/bin/$TOOL_NAME" /usr/local/bin/
+        sudo chmod +x "/usr/local/bin/$TOOL_NAME"
+        log_success "$TOOL_NAME installed to /usr/local/bin"
+      elif [ -f "$HOME/go/bin/$TOOL_NAME" ]; then
+        sudo cp "$HOME/go/bin/$TOOL_NAME" /usr/local/bin/
+        sudo chmod +x "/usr/local/bin/$TOOL_NAME"
+        log_success "$TOOL_NAME installed to /usr/local/bin"
+      else
+        log_warn "$TOOL_NAME not found after installation. Please check Go environment."
+      fi
+    done
 
     log_info "Installing Python-based tools..."
     pip3 install --upgrade trufflehog S3Scanner cloud_enum
