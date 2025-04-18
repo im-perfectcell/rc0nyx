@@ -144,10 +144,11 @@ install_dependencies() {
     fi
     log_info "Installing apt dependencies..."
     sudo apt update
-    sudo apt install -y amass findomain massdns puredns dnsgen altdns ffuf sqlite3 jq parallel seclists python3-pip git curl wget
+    sudo apt install -y amass findomain massdns dnsgen altdns ffuf sqlite3 jq parallel seclists python3-pip git curl wget
 
     log_info "Installing Go-based tools..."
     export GO111MODULE=on
+    go install github.com/d3mondev/puredns/v2@latest
     go install github.com/tomnomnom/assetfinder@latest
     go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
     go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
