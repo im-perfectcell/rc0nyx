@@ -154,7 +154,7 @@ install_dependencies() {
       "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
       "github.com/d3mondev/puredns/v2@latest"
       "github.com/projectdiscovery/httpx/cmd/httpx@latest"
-      "github.com/projectdiscovery/waybackurls/cmd/waybackurls@latest"
+      "github.com/tomnomnom/waybackurls@latest"
       "github.com/projectdiscovery/ffuf/cmd/ffuf@latest"
       "github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest"
       "github.com/sensepost/gowitness@latest"
