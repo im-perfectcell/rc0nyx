@@ -142,27 +142,29 @@ install_dependencies() {
     if [ "$EUID" -ne 0 ]; then
         log_error "Please run as root or with sudo for dependency installation."
     fi
-    log_info "Installing dependencies..."
-    OS=""
-    if command -v apt >/dev/null 2>&1; then OS="debian"
-    elif command -v dnf >/dev/null 2>&1; then OS="fedora"
-    elif command -v yum >/dev/null 2>&1; then OS="rhel"
-    elif command -v brew >/dev/null 2>&1; then OS="macos"
-    fi
-    if [ -z "$OS" ]; then
-        log_error "Unsupported OS or package manager. Install dependencies manually."
-    fi
-    case "$OS" in
-        debian) sudo apt update && sudo apt install -y $DEPENDENCIES python3-pip; pip3 install trufflehog S3Scanner cloud_enum ;;
-        fedora) sudo dnf install -y $DEPENDENCIES python3-pip; pip3 install trufflehog S3Scanner cloud_enum ;;
-        rhel) sudo yum install -y $DEPENDENCIES python3-pip; pip3 install trufflehog S3Scanner cloud_enum ;;
-        macos) brew install $DEPENDENCIES; pip3 install trufflehog S3Scanner cloud_enum ;;
-    esac
-    if ! command -v go >/dev/null 2>&1; then
-        log_error "Go not found. Please install Go manually."
-    fi
-    log_success "Dependencies installed! Restart terminal or run: source ~/.bashrc"
-    exit 0
+    log_info "Installing apt dependencies..."
+    sudo apt update
+    sudo apt install -y amass findomain massdns puredns dnsgen altdns ffuf sqlite3 jq parallel seclists python3-pip git curl wget
+
+    log_info "Installing Go-based tools..."
+    export GO111MODULE=on
+    go install github.com/tomnomnom/assetfinder@latest
+    go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+    go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+    go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+    go install github.com/projectdiscovery/waybackurls/cmd/waybackurls@latest
+    go install github.com/projectdiscovery/ffuf/cmd/ffuf@latest
+    go install github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
+    go install github.com/sensepost/gowitness@latest
+    go install github.com/003random/getJS@latest
+    go install github.com/ProjectAnteLink/LinkFinder@latest
+    go install github.com/tomnomnom/gf@latest
+    go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
+
+    log_info "Installing Python-based tools..."
+    pip3 install --upgrade trufflehog S3Scanner cloud_enum
+
+    log_success "All dependencies installed! Ensure \$GOPATH/bin or ~/go/bin is in your PATH."
 }
 
 # -------- Dependency Check --------
