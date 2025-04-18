@@ -167,6 +167,25 @@ install_dependencies() {
     log_success "All dependencies installed! Ensure \$GOPATH/bin or ~/go/bin is in your PATH."
 }
 
+# -------- Update Function --------
+update_rec0nyx() {
+    log_info "Updating rec0nyx from GitHub..."
+    TMP_DIR=$(mktemp -d)
+    if git clone https://github.com/im-perfectcell/rec0nyx.git "$TMP_DIR"; then
+        if [ -f "$TMP_DIR/rec0nyx" ]; then
+            sudo cp "$TMP_DIR/rec0nyx" /usr/local/bin/rec0nyx
+            sudo chmod +x /usr/local/bin/rec0nyx
+            log_success "rec0nyx updated to the latest version!"
+        else
+            log_error "rec0nyx script not found in cloned repo."
+        fi
+    else
+        log_error "Failed to clone repository"
+    fi
+    rm -rf "$TMP_DIR"
+    exit 0
+}
+
 # -------- Dependency Check --------
 check_dependencies() {
     [ ! -f "$WORDLIST" ] && log_error "Wordlist not found: $WORDLIST"
